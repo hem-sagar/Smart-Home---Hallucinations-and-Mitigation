@@ -1,0 +1,9 @@
+sensor,location,allowed_operators,min_value,max_value,related_devices,meaning
+temperature,all,>;>=;<;<=;==,0,50,ac;heater;fan,controls room temperature
+humidity,all,>;>=;<;<=;==,0,100,exhaust_fan;fan,controls humidity/airflow
+presence,all,==;is,,,light;camera,detects people/motion
+motion,all,==;is,,,light;camera,detects motion
+smoke_alarm,kitchen,==;is,,,smoke_alarm;exhaust_fan,safety alert
+gas_sensor,kitchen,==;is,,,gas_sensor;exhaust_fan,kitchen safety
+light_level,all,>;>=;<;<=;==,0,1000,light,controls brightness
+door_status,all,==;is,,,door,controls door
