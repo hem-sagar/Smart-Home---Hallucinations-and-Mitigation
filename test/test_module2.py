@@ -1,3 +1,4 @@
+import path_setup
 from module2_rule_generator import run_module2
 
 parsed = {

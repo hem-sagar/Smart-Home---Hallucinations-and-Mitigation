@@ -1,3 +1,4 @@
+import path_setup
 from module4_mitigation import mitigate_rule
 
 rule = {

@@ -1,3 +1,4 @@
+import path_setup
 from module3_hallucination_checker import check_hallucination
 
 rule = {
