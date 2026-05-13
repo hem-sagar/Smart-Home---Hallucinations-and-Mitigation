@@ -23,6 +23,17 @@ USER_PRESENCE = {
     "garage": False
 }
 
+# Colloquial / LLM names → device id in data/devices.csv
+DEVICE_ALIASES = {
+    "exhaust": "exhaust_fan",
+}
+
+
+def resolve_device_alias(device):
+    if not device:
+        return device
+    return DEVICE_ALIASES.get(device, device)
+
 
 def find_device_rooms(device):
     rooms = []
@@ -133,6 +144,9 @@ def infer_room(device):
     if len(possible_rooms) == 1:
         return possible_rooms[0], f"Selected '{possible_rooms[0]}' because device exists only there"
 
+    if not possible_rooms:
+        return None, f"Device '{device}' not found in catalog"
+
     present_rooms = get_rooms_with_user_presence(device)
 
     if len(present_rooms) == 1:
@@ -151,11 +165,26 @@ def infer_room(device):
     if room:
         return room, reason
 
+    if len(possible_rooms) == 2:
+        chosen = possible_rooms[0]
+        return chosen, (
+            f"Selected '{chosen}' because device exists in {possible_rooms} "
+            "with no presence or history tie-break; using first room in home order"
+        )
+
     return None, f"Device '{device}' exists in multiple rooms {possible_rooms}. Need clarification."
 
 
 def mitigate_action(action):
     fixed = copy.deepcopy(action)
+
+    notes = []
+    raw_device = fixed.get("device")
+    if raw_device:
+        resolved = resolve_device_alias(raw_device)
+        if resolved != raw_device:
+            fixed["device"] = resolved
+            notes.append(f"Mapped device '{raw_device}' to '{resolved}'")
 
     room = fixed.get("room")
     device = fixed.get("device")
@@ -166,8 +195,12 @@ def mitigate_action(action):
 
         if inferred_room:
             fixed["room"] = inferred_room
+            if notes:
+                return fixed, "; ".join(notes + [reason])
             return fixed, reason
 
+        if notes:
+            return fixed, "; ".join(notes + [reason])
         return fixed, reason
 
     # Case 2: LLM used sensor as device, e.g. temperature as device

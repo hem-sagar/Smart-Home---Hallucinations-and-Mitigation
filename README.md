@@ -1,274 +1,129 @@
-# Smart Home Command Pipeline
+# Smart Home: Hallucinations and Mitigation
 
-A natural language processing pipeline for smart home command execution. This system parses user commands, generates rules, validates them against a device catalog, detects hallucinations, applies mitigation strategies, and executes valid commands.
+This project parses natural-language smart-home commands, builds rules, and **checks every rule against CSV catalogs** (`data/rooms.csv`, `data/devices.csv`, `data/sensors.csv`). When the model output does not match the real home, we treat that as a **hallucination** and try **mitigation** before rejecting or executing the command.
 
-## Overview
+---
 
-The Smart Home Command Pipeline is a 5-module system that processes natural language smart home commands through the following stages:
+## Hallucination checks
 
-1. **Parsing** - Converts natural language commands to structured JSON
-2. **Rule Generation** - Creates executable rules from parsed commands
-3. **Hallucination Detection** - Validates rules against device catalog and constraints
-4. **Mitigation** - Attempts to fix invalid or problematic rules
-5. **Execution** - Executes valid rules and logs the results
+Hallucination detection is **catalog-based validation**, not a separate ML model. Anything that fails these checks is reported as invalid (the message you see in the CLI or API is the hallucination detail).
 
-## Project Structure
+### Actions (`check_action` / `check_action_for_all_rooms`)
 
-```
-Smart Home/
-├── module1_parser.py           # Command parsing with LLM support
-├── module2_rule_generator.py   # Rule generation from parsed commands
-├── module3_hallucination_checker.py  # Validation and constraint checking
-├── module4_mitigation.py       # Error correction and rule fixing
-├── module5_execution.py        # Rule execution and logging
-├── run_pipeline.py             # Main interactive pipeline
-├── data/
-│   ├── devices.csv            # Device catalog with room and actions
-│   ├── rooms.csv              # Available rooms in the smart home
-│   └── sensors.csv            # Sensor data
-├── logs/
-│   ├── command_logs.csv        # Parsed command history
-│   ├── execution_logs.csv      # Execution results
-│   ├── mitigation_logs.csv     # Mitigation attempts
-│   └── rule_logs.csv           # Generated rules
-├── test/                       # Unit tests for each module
-└── .env                        # Environment variables (API keys)
-```
+| Check | Typical cause |
+|--------|------------------|
+| **Unknown room** | Room name is not in `rooms.csv` and is not `all` (e.g. parser used `unknown` as a placeholder). |
+| **Wrong room for device** | Device exists in the home but not in the room named on the action. |
+| **Unknown device in room** | Device id does not appear under that room in `devices.csv`. |
+| **Invalid action** | Action is not listed in that row’s `allowed_actions`. |
+| **Whole-house (`all`)** | For `room: "all"`, the device must exist in **at least one** room; for **each** room that lists that device, the action must be allowed there. |
 
-## Modules
+### Conditions (`check_single_condition`)
 
-### Module 1: Parser (`module1_parser.py`)
-Parses natural language commands into structured JSON format.
+| Check | Typical cause |
+|--------|------------------|
+| **Sensor / location** | Sensor is not defined for that location in `sensors.csv` (after normalizing `house` / `home` / `whole_house` → `all`). |
+| **Operator** | Operator is not in that sensor’s `allowed_operators`. |
+| **Value range** | Numeric value is outside `min_value` / `max_value` for that sensor. |
+| **Value type** | Value cannot be interpreted as a number when a numeric range applies. |
 
-**Key Features:**
-- Converts user commands to JSON structure
-- Uses OpenAI API for NLP processing
-- Handles multiple actions in a single command
-- Identifies room, device, and action from commands
-- Distinguishes between smart-home and non-smart-home commands
-- Logs all parsed commands
+Rules are invalid if **any** action fails or **any** condition in the rule’s condition groups fails.
 
-### Module 2: Rule Generator (`module2_rule_generator.py`)
-Generates executable rules from parsed commands.
+---
 
-**Key Features:**
-- Creates rule objects with IDs and timestamps
-- Supports immediate triggers and conditional execution
-- Includes action and condition formatting
-- Uses LLM for rule generation when needed
-- Provides default rule formatting
+## Mitigation types
 
-### Module 3: Hallucination Checker (`module3_hallucination_checker.py`)
-Validates rules against device catalog and constraints.
+Mitigation runs only when validation fails. It **mutates a copy of the rule** in small steps until validation passes or no further change is possible.
 
-**Key Features:**
-- Loads device, room, and sensor catalogs from CSV
-- Validates room existence
-- Checks device availability in specified rooms
-- Verifies action validity for devices
-- Detects logical inconsistencies
-- Returns validation status with detailed messages
+### Action mitigation (`mitigate_action`)
 
-### Module 4: Mitigation (`module4_mitigation.py`)
-Attempts to fix invalid or problematic rules.
+Applied in order until one strategy changes the action:
 
-**Key Features:**
-- Identifies devices across multiple rooms
-- Applies user presence constraints
-- Fixes device room assignments
-- Corrects invalid actions
-- Classifies mitigation strategies (fix, clarify, ignore)
-- Logs all mitigation attempts
+1. **Device alias** — Maps common LLM names to catalog ids (e.g. `exhaust` → `exhaust_fan` via `DEVICE_ALIASES` in `module4_mitigation.py`).
+2. **Unknown / missing room** — Infers a room from the **canonical** device id:
+   - Only one room has that device → use it.
+   - Device missing from catalog → cannot infer (needs catalog or alias fix).
+   - User “presence” stub (`USER_PRESENCE`) prefers a room when the user is marked present and the device exists there.
+   - Otherwise **command history** in `logs/command_logs.csv` (frequency / recency among candidate rooms).
+   - If exactly **two** rooms still tie with no history/presence, picks the **first in home order** (`rooms.csv` order) and records that in the reason string.
+3. **Sensor named as device** — If the “device” field matches a sensor that has `related_devices` in `sensors.csv`, rewrites to an actual device in the same room (and may normalize the action, e.g. toward `turn_on`).
+4. **Wrong room, device exists elsewhere** — If the room is valid but the device is not in that room, moves the action to the only catalog room that has the device, or uses the same **infer_room** logic when multiple rooms apply.
 
-### Module 5: Execution (`module5_execution.py`)
-Executes valid rules and maintains execution logs.
+If nothing applies, the action is unchanged and mitigation may try **conditions** next.
 
-**Key Features:**
-- Executes individual actions
-- Logs execution results
-- Records rule execution metadata
-- Stores results in execution logs
-- Handles action values and device parameters
+### Condition mitigation (`mitigate_condition`)
 
-## Requirements
+- Parses a **raw string** condition (e.g. `temperature > 30`) into `sensor`, `operator`, `value`.
+- **Sensor token aliases** (e.g. `temp` → `temperature`, `gas` → `gas_sensor`).
+- Normalizes operators (e.g. `=` → `==`).
+- **Location**: fills missing location from the first action’s room, or `all` when the action room is unknown.
+- **Value clamping**: soft bounds for temperature/humidity, then clamp to catalog min/max when defined.
 
-- Python 3.8+
-- OpenAI API key (for LLM-based parsing and rule generation)
-- Required Python packages:
-  - `openai`
-  - `python-dotenv`
+### Mitigation loop (`mitigate_rule`)
 
-## Installation
+Repeatedly runs `check_hallucination`; on failure, fixes **one** action (first changeable) or **one** condition (first changeable group item), then re-validates. Stops when the rule is valid or the rule no longer changes (**mitigation failed**).
 
-1. Clone or download the project:
+### Logged outcomes (`logs/mitigation_logs.csv`)
+
+- **`success`** — Rule became valid (either unchanged from the start in that call path, or fixed and then validated).
+- **`failed`** — No further automatic fix; the command should be clarified or rephrased by the user.
+
+API / CLI copy uses string statuses such as **`mitigated_successfully`** and **`mitigation_failed`** for the last mitigation pass.
+
+---
+
+## How to run
+
+Prerequisites: **Python 3.8+**, **Node.js** (for the dashboard), **`pip install -r requirements.txt`**, **`npm install`** inside `frontend/`, and a **`.env`** in the project root with `OPENAI_API_KEY=` for LLM parsing and rule generation.
+
+Always run commands from the **repository root** (where `data/` and `logs/` resolve correctly).
+
+### One command: API + dashboard (`run.py`)
+
+Starts **FastAPI** on `http://127.0.0.1:8000` and **Vite** on `http://127.0.0.1:5173` in one terminal. Stop with **Ctrl+C**.
+
 ```bash
-cd "Smart Home"
+python run.py
 ```
 
-2. Install dependencies:
+Options:
+
 ```bash
-pip install openai python-dotenv
+python run.py --help
+python run.py --backend-only
+python run.py --frontend-only
+python run.py --no-reload
+python run.py --port 8000
 ```
 
-3. Set up environment variables:
-Create a `.env` file in the project root with:
-```
-OPENAI_API_KEY=your_api_key_here
-```
+### CLI pipeline only (`run_pipeline.py`)
 
-4. Prepare data files:
-Ensure the following CSV files exist in the `data/` directory:
-- `devices.csv` - Device catalog
-- `rooms.csv` - Room list
-- `sensors.csv` - Sensor data
-
-## Usage
-
-### Run the Interactive Pipeline
+Interactive terminal: choose user (`father` / `mother` / `son`), enter commands, type `exit` to quit.
 
 ```bash
 python run_pipeline.py
 ```
 
-This starts an interactive prompt where you can enter smart home commands:
-
-```
-Enter smart home command or type 'exit': Turn on the living room lights
-Rule is valid.
-Executed: turn_on light in living_room
-
-Enter smart home command or type 'exit': Set temperature to 72 in bedroom
-Hallucination detected: ...
-Trying mitigation...
-Mitigation successful.
-Executed: set_temperature thermostat in bedroom_1 with value 72
-```
-
-### Run Tests
+### Backend or frontend alone
 
 ```bash
-# Run all tests
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+```bash
+cd frontend && npm run dev
+```
+
+Optional: set `VITE_API_URL` if the API is not on `http://localhost:8000`.
+
+### Tests
+
+```bash
 python -m pytest test/
-
-# Run specific module test
-python -m pytest test/test_module1.py
 ```
 
-## Data Files Format
-
-### devices.csv
-| room | device | allowed_actions |
-|------|--------|-----------------|
-| living_room | light | turn_on;turn_off |
-| living_room | tv | turn_on;turn_off;set_channel |
-| bedroom_1 | light | turn_on;turn_off |
-| bedroom_1 | thermostat | set_temperature;read |
-
-### rooms.csv
-| room |
-|------|
-| living_room |
-| bedroom_1 |
-| bedroom_2 |
-| kitchen |
-| washroom |
-| garage |
-
-### sensors.csv
-| sensor_id | location | type |
-|-----------|----------|------|
-| sensor_1 | living_room | motion |
-| sensor_2 | kitchen | temperature |
-
-## Logs
-
-The system maintains detailed logs in the `logs/` directory:
-
-- **command_logs.csv** - All parsed commands with timestamps
-- **rule_logs.csv** - Generated rules and their creation times
-- **mitigation_logs.csv** - Mitigation attempts and outcomes
-- **execution_logs.csv** - Executed rules and their results
-
-Each log includes metadata for debugging and analysis.
-
-## Example Commands
-
-```
-# Basic commands
-"Turn on the living room lights"
-"Close the kitchen door"
-
-# Commands with values
-"Set temperature to 72"
-"Set volume to 30"
-
-# Commands with conditions
-"Turn on lights when motion detected"
-
-# Multiple actions
-"Turn off all lights and lock the doors"
-```
-
-## Workflow
-
-```
-User Command
-    ↓
-[Module 1] Parser → Parsed JSON
-    ↓
-[Module 2] Rule Generator → Rule Object
-    ↓
-[Module 3] Hallucination Checker → Valid/Invalid
-    ├→ Valid → [Module 5] Execution
-    └→ Invalid → [Module 4] Mitigation
-                   ↓
-            Fixed/Clarify/Ignore
-                   ↓
-         [Module 5] Execution/Logging
-```
-
-## Features
-
-✅ Natural language command parsing
-✅ Intelligent rule generation
-✅ AI-powered hallucination detection
-✅ Automatic error mitigation
-✅ Comprehensive logging
-✅ Device catalog validation
-✅ Multi-room support
-✅ Conditional execution support
-✅ User presence awareness
-
-## Error Handling
-
-The system handles various error scenarios:
-
-- **Unknown Commands** - Non-smart-home commands are ignored
-- **Invalid Devices** - Attempts mitigation by finding devices in other rooms
-- **Invalid Actions** - Corrects actions based on device capabilities
-- **Ambiguous Rooms** - Uses "unknown" when room is not specified
-- **Hallucinations** - Detects and attempts to fix AI-generated errors
-
-## Mitigation Strategies
-
-1. **Fix** - Automatically corrects the rule (e.g., finds correct room for device)
-2. **Clarify** - Rule requires user clarification
-3. **Ignore** - Rule cannot be fixed and is ignored
-
-## Contributing
-
-When adding new modules or features:
-
-1. Follow the 5-module pipeline structure
-2. Add unit tests in the `test/` directory
-3. Update data files if new devices or rooms are added
-4. Maintain logging for debugging and analysis
-5. Update this README with new features
+---
 
 ## License
 
-[Specify your license here]
-
-## Support
-
-For issues or questions, please check the logs directory for execution and error details.
+Specify your license here.
