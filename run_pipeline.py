@@ -5,20 +5,24 @@ from module4_mitigation import mitigate_rule
 from module5_execution import run_execution
 
 
-while True:
-    command = input("\nEnter smart home command or type 'exit': ")
+ALLOWED_USERS = ["father", "mother", "son"]
 
+
+def run_pipeline(user_id, command):
     if command.lower() == "exit":
-        print("Stopped.")
-        break
+        return "exit"
 
-    parsed = run_module1(command)
+    parsed = run_module1(user_id, command)
     # print("\nModule 1 - Parsed Command:")
     # print(parsed)
 
     if parsed.get("type") == "unknown":
         print("\nNot a smart home command. Ignored.")
-        continue
+        return parsed
+
+    if parsed.get("type") == "preference":
+        print("\nPersonal preference saved.")
+        return parsed
 
     rule = run_module2(parsed)
     # print("\nModule 2 - Generated Rule:")
@@ -47,3 +51,22 @@ while True:
         else:
             print("\nMitigation failed.")
             print("\nInvalid command. Need user clarification.")
+
+    return parsed
+
+
+if __name__ == "__main__":
+    while True:
+        user_id = input("\nEnter user (father/mother/son): ").strip().lower()
+
+        if user_id not in ALLOWED_USERS:
+            print("Invalid user. Please enter father, mother, or son.")
+            continue
+
+        command = input("Enter command: ")
+
+        if command.lower() == "exit":
+            print("Stopped.")
+            break
+
+        run_pipeline(user_id, command)

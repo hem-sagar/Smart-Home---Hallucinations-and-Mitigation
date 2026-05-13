@@ -1,0 +1,107 @@
+[
+  {
+    "user_id": "father",
+    "phrase": "make_it_cool",
+    "actions": [
+      {
+        "room": "bedroom_1",
+        "device": "ac",
+        "action": "set_temperature",
+        "value": 20,
+        "condition": null
+      }
+    ],
+    "timestamp": "2026-05-13 11:05:35"
+  },
+  {
+    "user_id": "mother",
+    "phrase": "make_it_cool",
+    "actions": [
+      {
+        "room": "bedroom_1",
+        "device": "ac",
+        "action": "set_temperature",
+        "value": 24,
+        "condition": null
+      }
+    ],
+    "timestamp": "2026-05-13 11:06:00"
+  },
+  {
+    "user_id": "son",
+    "phrase": "make_it_cool",
+    "actions": [
+      {
+        "room": "bedroom_2",
+        "device": "fan",
+        "action": "turn_on",
+        "value": "",
+        "condition": null
+      }
+    ],
+    "timestamp": "2026-05-13 11:06:00"
+  },
+  {
+    "user_id": "father",
+    "phrase": "movie_mode",
+    "actions": [
+      {
+        "room": "living_room",
+        "device": "light",
+        "action": "turn_off",
+        "value": "",
+        "condition": null
+      },
+      {
+        "room": "living_room",
+        "device": "tv",
+        "action": "turn_on",
+        "value": "",
+        "condition": null
+      }
+    ],
+    "timestamp": "2026-05-13 11:06:00"
+  },
+  {
+    "user_id": "mother",
+    "phrase": "movie_mode",
+    "actions": [
+      {
+        "room": "living_room",
+        "device": "light",
+        "action": "turn_off",
+        "value": "",
+        "condition": null
+      },
+      {
+        "room": "living_room",
+        "device": "tv",
+        "action": "set_volume",
+        "value": 20,
+        "condition": null
+      }
+    ],
+    "timestamp": "2026-05-13 11:06:00"
+  },
+  {
+    "user_id": "son",
+    "phrase": "movie_mode",
+    "actions": [
+      {
+        "room": "bedroom_2",
+        "device": "light",
+        "action": "turn_off",
+        "value": "",
+        "condition": null
+      },
+      {
+        "room": "bedroom_2",
+        "device": "ac",
+        "action": "set_temperature",
+        "value": 22,
+        "condition": null
+      }
+    ],
+    "timestamp": "2026-05-13 11:06:00"
+  }
+]

@@ -4,6 +4,7 @@ import csv
 from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv
+from module_personalization import apply_personalization, save_user_preference
 
 load_dotenv()  # loads .env file
 
@@ -16,12 +17,18 @@ Parse ANY smart-home command into valid JSON.
 
 Rules:
 - Return only JSON.
+- Always include "type", "phrase", "condition", "schedule", and "actions".
 - If command has multiple actions, put them in "actions" list.
 - If command affects all rooms, use "room": "all".
 - Do not use "room": "all" unless the user explicitly says all, every, whole house, or everywhere.
 - If user does not mention a room, use "room": "unknown".
 - If command is not smart-home related, use "type": "unknown".
-- Use snake_case for room, device, and action.
+- If user is teaching a personal preference, use "type": "preference".
+- For preference commands, extract the trigger phrase separately in "phrase".
+- Preference examples:
+  - "When I say movie mode, turn off lights and turn on TV"
+  - "When I say make it cool, set bedroom AC to 20"
+- Use snake_case for phrase, room, device, and action.
 - Common actions: turn_on, turn_off, open, close, lock, unlock, set_temperature, set_volume, set_channel, read.
 - Common rooms: living_room, bedroom_1, bedroom_2, kitchen, washroom, garage.
 - If command has multiple actions, return a list in "actions"
@@ -44,6 +51,7 @@ Command:
 JSON format:
 {{
   "type": "simple | conditional | scheduled | query | bulk | preference | multi_action | unknown",
+  "phrase": "",
   "condition": null,
   "schedule": null,
   "actions": [
@@ -90,7 +98,26 @@ def save_log(command, parsed):
         ])
 
 
-def run_module1(command):
+def run_module1(user_id, command=None):
+    if command is None:
+        command = user_id
+        user_id = "default"
+
     parsed = parse_with_llm(command)
+
+    if "phrase" not in parsed:
+        parsed["phrase"] = ""
+    if "condition" not in parsed:
+        parsed["condition"] = None
+    if "schedule" not in parsed:
+        parsed["schedule"] = None
+    if "actions" not in parsed:
+        parsed["actions"] = []
+
+    if parsed.get("type") == "preference":
+        save_user_preference(user_id, command, parsed)
+    else:
+        parsed = apply_personalization(user_id, command, parsed)
+
     save_log(command, parsed)
     return parsed

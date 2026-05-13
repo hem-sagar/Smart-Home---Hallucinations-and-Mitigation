@@ -2,13 +2,15 @@ import copy
 import csv
 import json
 import os
+import re
 from collections import Counter
 
 from module3_hallucination_checker import (
     ROOMS,
     DEVICE_CATALOG,
     SENSOR_CATALOG,
-    check_hallucination
+    check_hallucination,
+    normalize_location,
 )
 
 
@@ -196,6 +198,250 @@ def mitigate_action(action):
     return fixed, "No mitigation found"
 
 
+# Raw string condition → structured fields; sensor names match data/sensors.csv
+SENSOR_TOKEN_ALIASES = {
+    "temp": "temperature",
+    "temperature": "temperature",
+    "humidity": "humidity",
+    "smoke": "smoke_alarm",
+    "smoke_alarm": "smoke_alarm",
+    "gas": "gas_sensor",
+    "gas_sensor": "gas_sensor",
+    "presence": "presence",
+    "light": "light_level",
+    "light_level": "light_level",
+    "brightness": "light_level",
+}
+
+def _normalize_condition_operator(op):
+    if op is None:
+        return op
+    op = str(op).strip()
+    if op == "=":
+        return "=="
+    return op
+
+
+def _parse_condition_numeric_value(text):
+    t = str(text).strip().strip('"').strip("'")
+    t = re.sub(r"(?i)(°\s*c|°c|\s*c)\s*$", "", t)
+    t = re.sub(r"\s*%\s*$", "", t)
+    t = t.strip()
+    try:
+        if "." in t:
+            return float(t)
+        return int(t)
+    except ValueError:
+        return t
+
+
+def _split_raw_condition_string(raw):
+    s = (raw or "").strip()
+    if not s:
+        return None
+
+    m = re.match(
+        r"^\s*(?P<sensor>[\w_]+)\s*(?P<op>>=|<=|==|>|<|=)\s*(?P<val>.+)$",
+        s,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+
+    return m.group("sensor"), m.group("op"), m.group("val")
+
+
+def _canonical_sensor_name(token):
+    if not token:
+        return None
+    key = str(token).strip().lower()
+    if not key:
+        return None
+    return SENSOR_TOKEN_ALIASES.get(key, key)
+
+
+def _sensor_catalog_bounds(sensor_name):
+    for row in SENSOR_CATALOG:
+        if row.get("sensor") == sensor_name:
+            min_v = row.get("min_value", "")
+            max_v = row.get("max_value", "")
+            if min_v != "" and max_v != "":
+                try:
+                    return float(min_v), float(max_v)
+                except ValueError:
+                    continue
+    return None, None
+
+
+def _user_soft_clamp(sensor_name, value):
+    """Apply requested soft bounds before catalog enforcement."""
+    if not isinstance(value, (int, float)):
+        return value, None
+
+    v = float(value)
+    if sensor_name == "temperature":
+        lo, hi = -10.0, 50.0
+        if v > hi:
+            return hi, f"Clamped temperature {value} to {hi}"
+        if v < lo:
+            return lo, f"Clamped temperature {value} to {lo}"
+        return v, None
+
+    if sensor_name == "humidity":
+        lo, hi = 0.0, 100.0
+        if v > hi:
+            return hi, f"Clamped humidity {value} to {hi}"
+        if v < lo:
+            return lo, f"Clamped humidity {value} to {lo}"
+        return v, None
+
+    return v, None
+
+
+def _clamp_condition_value(sensor_name, value):
+    reasons = []
+
+    if isinstance(value, (int, float)):
+        v, note = _user_soft_clamp(sensor_name, value)
+        if note:
+            reasons.append(note)
+        value = v
+
+    if not isinstance(value, (int, float)):
+        return value, reasons
+
+    cat_min, cat_max = _sensor_catalog_bounds(sensor_name)
+    v = float(value)
+    if cat_min is not None and cat_max is not None:
+        if v < cat_min:
+            reasons.append(
+                f"Clamped {sensor_name} value {value} to catalog minimum {cat_min}"
+            )
+            v = cat_min
+        elif v > cat_max:
+            reasons.append(
+                f"Clamped {sensor_name} value {value} to catalog maximum {cat_max}"
+            )
+            v = cat_max
+
+    if v == int(v):
+        v = int(v)
+
+    return v, reasons
+
+
+def _default_condition_location(rule):
+    actions = rule.get("actions") or []
+    if not actions:
+        return "all"
+
+    room = actions[0].get("room")
+    if room in (None, "", "unknown"):
+        return "all"
+
+    return room
+
+
+def mitigate_condition(condition, rule):
+    """
+    Normalize a single condition dict: raw string → structured fields,
+    infer location, clamp unrealistic numeric values.
+    Returns (fixed_condition, reason).
+    """
+    fixed = copy.deepcopy(condition)
+    reasons = []
+
+    raw = fixed.get("condition")
+    if isinstance(raw, str) and raw.strip():
+        parts = _split_raw_condition_string(raw)
+        if parts:
+            left, op, right = parts
+            sensor = _canonical_sensor_name(left)
+            if sensor:
+                fixed["sensor"] = sensor
+            fixed["operator"] = _normalize_condition_operator(op)
+            fixed["value"] = _parse_condition_numeric_value(right)
+            reasons.append("Converted raw condition string to structured fields")
+            fixed.pop("condition", None)
+    elif "condition" in fixed:
+        fixed.pop("condition", None)
+
+    sensor = fixed.get("sensor") or fixed.get("condition_type")
+    if sensor:
+        canon = _canonical_sensor_name(sensor)
+        if canon and canon != sensor:
+            reasons.append(f"Normalized sensor name '{sensor}' → '{canon}'")
+        if canon:
+            fixed["sensor"] = canon
+        elif not fixed.get("sensor"):
+            fixed["sensor"] = str(sensor).strip().lower()
+        fixed.pop("condition_type", None)
+
+    op = fixed.get("operator")
+    norm_op = _normalize_condition_operator(op)
+    if norm_op and norm_op != op:
+        reasons.append(f"Normalized operator '{op}' → '{norm_op}'")
+        fixed["operator"] = norm_op
+
+    loc = fixed.get("location") or fixed.get("room") or fixed.get("scope")
+    if not loc:
+        loc = _default_condition_location(rule)
+        fixed["location"] = normalize_location(loc)
+        reasons.append(f"Inferred condition location '{fixed['location']}'")
+    else:
+        fixed["location"] = normalize_location(loc)
+
+    for k in ("room", "scope"):
+        fixed.pop(k, None)
+
+    sensor_name = fixed.get("sensor")
+    if sensor_name and "value" in fixed:
+        new_val, clamp_notes = _clamp_condition_value(sensor_name, fixed.get("value"))
+        if clamp_notes:
+            reasons.extend(clamp_notes)
+        fixed["value"] = new_val
+
+    reason = "; ".join(reasons) if reasons else "No condition mitigation"
+    return fixed, reason
+
+
+def _mitigate_first_condition(current_rule):
+    conditions = current_rule.get("conditions")
+    if not conditions:
+        return False, ""
+
+    for gi, group in enumerate(conditions):
+        if not isinstance(group, dict):
+            continue
+
+        if "any" in group:
+            lst = group["any"]
+            for i, cond in enumerate(lst):
+                before = copy.deepcopy(cond)
+                fixed, reason = mitigate_condition(cond, current_rule)
+                if fixed != before:
+                    lst[i] = fixed
+                    return True, reason
+
+        elif "all" in group:
+            lst = group["all"]
+            for i, cond in enumerate(lst):
+                before = copy.deepcopy(cond)
+                fixed, reason = mitigate_condition(cond, current_rule)
+                if fixed != before:
+                    lst[i] = fixed
+                    return True, reason
+
+        else:
+            before = copy.deepcopy(group)
+            fixed, reason = mitigate_condition(group, current_rule)
+            if fixed != group:
+                conditions[gi] = fixed
+                return True, reason
+
+    return False, ""
+
+
 def save_mitigation_log(original_rule, fixed_rule, status, reason):
     os.makedirs("logs", exist_ok=True)
 
@@ -261,6 +507,13 @@ def mitigate_rule(rule):
                 last_reason = reason
                 print("Mitigation:", reason)
                 break
+
+        if not changed:
+            cond_changed, cond_reason = _mitigate_first_condition(current_rule)
+            if cond_changed:
+                changed = True
+                last_reason = cond_reason
+                print("Mitigation:", cond_reason)
 
         if not changed:
             save_mitigation_log(
