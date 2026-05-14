@@ -10,6 +10,25 @@ const PIPELINE_LABELS = [
   "Execution",
 ];
 
+/** Human-readable mitigation changes for the compact pipeline hint */
+function mitigationAdjustmentsHint(runResult) {
+  const fallback = "Adjusted rooms, devices, or conditions";
+  const steps = runResult?.mitigation_timeline;
+  if (!Array.isArray(steps) || steps.length === 0) return fallback;
+
+  const skip = (s) =>
+    /^Hallucination detected:/i.test(s) ||
+    /^Rule executed$/i.test(s) ||
+    /^Command rejected$/i.test(s) ||
+    /^Mitigation could not fully repair/i.test(s);
+
+  const kept = steps.filter((s) => typeof s === "string" && s.trim() && !skip(s));
+  if (kept.length === 0) return fallback;
+
+  const text = kept.join(" · ");
+  return text.length > 180 ? `${text.slice(0, 177)}…` : text;
+}
+
 function resultBadge(runResult) {
   if (!runResult) return null;
   const { final_status, hallucination_detected, mitigation_status } =
@@ -32,7 +51,7 @@ function resultBadge(runResult) {
     };
   }
   return {
-    label: "Rejected",
+    label: "Wrong Command",
     emoji: "❌",
     className: "bg-rose-50 text-rose-800 border-rose-200",
   };
@@ -101,7 +120,7 @@ function buildCompletedSteps(runResult) {
     steps.push({
       key: "mit",
       label: "Mitigation",
-      hint: "Applied fixes",
+      hint: mitigationAdjustmentsHint(runResult),
       tone: "ok",
     });
   } else if (ms === "mitigation_failed") {
@@ -355,9 +374,36 @@ export default function CommandPanel({
               </div>
               {!loading && runResult?.hallucination_message && (
                 <p className="mt-2 text-xs text-slate-600 leading-snug border-t border-slate-200/80 pt-2">
-                  {runResult.hallucination_message}
+                  {runResult.final_status === "executed" &&
+                  runResult.hallucination_detected ? (
+                    <>
+                      <span className="font-semibold text-slate-700">
+                        Initial validation (before fixes):{" "}
+                      </span>
+                      {runResult.hallucination_message}
+                    </>
+                  ) : (
+                    runResult.hallucination_message
+                  )}
                 </p>
               )}
+              {!loading &&
+                runResult?.final_status === "executed" &&
+                Array.isArray(runResult.execution_results) &&
+                runResult.execution_results.length > 0 && (
+                  <div className="mt-2 border-t border-slate-200/80 pt-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                      Executed command (simulated)
+                    </p>
+                    <ul className="text-xs text-slate-800 space-y-1 list-disc list-inside">
+                      {runResult.execution_results.map((line, i) => (
+                        <li key={i} className="leading-snug">
+                          {line}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
             </div>
           )}
 

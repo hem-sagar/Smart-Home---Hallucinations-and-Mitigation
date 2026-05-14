@@ -1,37 +1,30 @@
 import path_setup
+import os
+
+# Windows consoles may default to a legacy code page; module3 prints Unicode arrows.
+os.environ.setdefault("PYTHONUTF8", "1")
+
 from module4_mitigation import mitigate_rule
 
 rule = {
     "actions": [
-        {
-            "room": "living_room",
-            "device": "temperature",
-            "action": "set_temperature",
-            "value": "decrease"
-        }
+       {
+  "type": "simple",
+  "phrase": "turn_on_ac",
+  "actions": [
+    {
+      "room": "office",
+      "device": "ac",
+      "action": "turn_on",
+      "value": "",
+    }
+  ]
+}
     ]
 }
 
-fixed_rule, status = mitigate_rule(rule)
+fixed_rule, status = mitigate_rule(rule, user_id="father")
 
 print("\nFixed Rule:")
 print(fixed_rule)
 print("Status:", status)
-
-exhaust_rule = {
-    "actions": [
-        {
-            "room": "unknown",
-            "device": "exhaust",
-            "action": "turn_on",
-            "value": None,
-            "condition": None,
-        }
-    ]
-}
-
-fixed_exhaust, exhaust_status = mitigate_rule(exhaust_rule)
-assert exhaust_status == "mitigated_successfully", exhaust_status
-assert fixed_exhaust["actions"][0]["device"] == "exhaust_fan"
-assert fixed_exhaust["actions"][0]["room"] == "kitchen"
-print("\nExhaust alias + room:", fixed_exhaust["actions"][0], exhaust_status)

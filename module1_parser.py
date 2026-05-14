@@ -4,16 +4,22 @@ import csv
 from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv
+from home_llm_context import build_home_digest_for_prompt
 from module_personalization import apply_personalization, save_user_preference
 
 load_dotenv()  # loads .env file
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
 def parse_with_llm(command):
+    home_digest = build_home_digest_for_prompt()
     prompt = f"""
 You are a smart home command parser.
 
 Parse ANY smart-home command into valid JSON.
+
+{home_digest}
 
 Rules:
 - Return only JSON.
@@ -22,6 +28,9 @@ Rules:
 - If command affects all rooms, use "room": "all".
 - Do not use "room": "all" unless the user explicitly says all, every, whole house, or everywhere.
 - If user does not mention a room, use "room": "unknown".
+- Every action "room" must be one of VALID_ROOMS above, or "unknown", or "all" (only as above). Never invent other room names (e.g. office, basement) — use "unknown" if the user names a room not in VALID_ROOMS.
+- Every action "device" must be exactly a device id from the DEVICES list (it appears next to a room). If room is "unknown", still use only real device ids from the lists above (mitigation may infer the room later).
+- For conditions / sensors, use only sensor names and locations from the SENSORS section.
 - If command is not smart-home related, use "type": "unknown".
 - If user is teaching a personal preference, use "type": "preference".
 - For preference commands, extract the trigger phrase separately in "phrase".
@@ -29,8 +38,7 @@ Rules:
   - "When I say movie mode, turn off lights and turn on TV"
   - "When I say make it cool, set bedroom AC to 20"
 - Use snake_case for phrase, room, device, and action.
-- Common actions: turn_on, turn_off, open, close, lock, unlock, set_temperature, set_volume, set_channel, read.
-- Common rooms: living_room, bedroom_1, bedroom_2, kitchen, washroom, garage.
+- Common actions (must match allowed_actions for that device when possible): turn_on, turn_off, open, close, lock, unlock, set_temperature, set_volume, set_channel, read, set_speed, trigger, reset.
 - If command has multiple actions, return a list in "actions"
 - Each action can have its own condition
 - If condition applies to only one action, attach it inside that action

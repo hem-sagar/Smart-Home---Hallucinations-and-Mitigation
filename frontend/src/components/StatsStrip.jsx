@@ -14,12 +14,12 @@ function Stat({ label, value }) {
 export default function StatsStrip({ counters }) {
   const c = counters || {};
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-6">
       <Stat label="Total commands" value={c.total_commands} />
       <Stat label="Valid / executed" value={c.valid_commands} />
       <Stat label="Hallucinations (logs)" value={c.hallucinations_detected} />
-      <Stat label="Mitigations OK" value={c.mitigations_successful} />
-      <Stat label="Rejected" value={c.rejected_commands} />
+      <Stat label="Mitigations" value={c.mitigations_successful} />
+      {/* <Stat label="Rejected" value={c.rejected_commands} /> */}
     </div>
   );
 }

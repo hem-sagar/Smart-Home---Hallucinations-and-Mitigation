@@ -10,7 +10,7 @@ export default function Header() {
             LLM pipeline + validation
           </div>
           <h1 className="font-display text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">
-            Hallucination-Aware Smart Home Control
+           Enhancing Reliability in LLM-Based Smart Home Systems
           </h1>
           <p className="mt-2 text-slate-600 text-sm sm:text-base max-w-2xl">
             Multi-user personalized LLM smart-home automation with rule

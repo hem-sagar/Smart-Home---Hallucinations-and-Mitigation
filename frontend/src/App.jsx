@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { RefreshCw, AlertTriangle } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import { fetchDashboardData } from "./api.js";
 import AppShell from "./components/AppShell.jsx";
 import Header from "./components/Header.jsx";
@@ -20,7 +20,6 @@ export default function App() {
   const [loadError, setLoadError] = useState("");
   const [userId, setUserId] = useState("father");
   const [runResult, setRunResult] = useState(null);
-  const [activeNav, setActiveNav] = useState("command");
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -40,14 +39,9 @@ export default function App() {
     load();
   }, [load]);
 
-  function navigate(id) {
-    setActiveNav(id);
-    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
   return (
-    <AppShell activeId={activeNav} onNavigate={navigate}>
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 mb-4">
+    <AppShell>
+      {/* <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 mb-4">
         <button
           type="button"
           onClick={() => load()}
@@ -57,7 +51,7 @@ export default function App() {
           <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
           Refresh data
         </button>
-      </div>
+      </div> */}
 
       <Header />
 

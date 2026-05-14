@@ -12,27 +12,46 @@ from module3_hallucination_checker import (
     check_hallucination,
     normalize_location,
 )
+from module_personalization import load_preferences
 
 
 USER_PRESENCE = {
     "living_room": True,
-    "bedroom_1": False,
-    "bedroom_2": False,
-    "kitchen": False,
-    "washroom": False,
-    "garage": False
-}
-
-# Colloquial / LLM names → device id in data/devices.csv
-DEVICE_ALIASES = {
-    "exhaust": "exhaust_fan",
+    "bedroom_1": True,
+    "bedroom_2": True,
+    "kitchen": True,
+    "washroom": True,
+    "garage": True
 }
 
 
-def resolve_device_alias(device):
-    if not device:
-        return device
-    return DEVICE_ALIASES.get(device, device)
+def normalize_rule_actions_list(actions):
+ 
+    if not isinstance(actions, list):
+        return []
+    out = []
+    for a in actions:
+        if not isinstance(a, dict):
+            continue
+        inner = a.get("actions")
+        if isinstance(inner, list) and inner:
+            for sub in inner:
+                if isinstance(sub, dict):
+                    out.append(copy.deepcopy(sub))
+            continue
+        out.append(copy.deepcopy(a))
+    return out
+
+
+def _room_missing_or_invalid(room):
+    """True if we should infer a room from the device (and logs / preferences)."""
+    if room is None or room == "" or room == "unknown":
+        return True
+    if room == "all":
+        return False
+    if room not in ROOMS:
+        return True
+    return False
 
 
 def find_device_rooms(device):
@@ -138,19 +157,72 @@ def get_most_used_room_from_logs(device, candidate_rooms):
     return None, "History tied and no latest room found"
 
 
-def infer_room(device):
+def get_latest_log_room_for_device(device, candidate_rooms):
+    """Most recent command log row (append order) that used this device in one of candidate rooms."""
+    log_file = "logs/command_logs.csv"
+    if not os.path.isfile(log_file) or not candidate_rooms:
+        return None
+
+    cand = set(candidate_rooms)
+    rows = []
+    with open(log_file, newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+
+    for row in reversed(rows):
+        parsed_text = row.get("parsed_output")
+        if not parsed_text:
+            continue
+        try:
+            parsed = json.loads(parsed_text)
+        except Exception:
+            continue
+        for action in parsed.get("actions", []):
+            if action.get("device") != device:
+                continue
+            room = action.get("room")
+            if room in cand:
+                return room
+    return None
+
+
+def get_room_from_user_preferences(device, user_id):
+    """Most recently saved preference entry for this user that mentions the device in a valid room."""
+    if not user_id or not device:
+        return None, ""
+
+    last_room = None
+    for pref in reversed(load_preferences()):
+        if pref.get("user_id") != user_id:
+            continue
+        for act in pref.get("actions") or []:
+            if act.get("device") != device:
+                continue
+            room = act.get("room")
+            if room in ROOMS:
+                last_room = room
+
+    if last_room:
+        return last_room, "Selected room from saved user preference (latest match)"
+    return None, ""
+
+
+def infer_room(device, user_id=None):
     possible_rooms = find_device_rooms(device)
 
     if len(possible_rooms) == 1:
         return possible_rooms[0], f"Selected '{possible_rooms[0]}' because device exists only there"
 
     if not possible_rooms:
-        return None, f"Device '{device}' not found in catalog"
+        return None, f"Device '{device}' is not in your saved home device list"
 
     present_rooms = get_rooms_with_user_presence(device)
 
     if len(present_rooms) == 1:
         return present_rooms[0], f"Selected '{present_rooms[0]}' because user is present there"
+
+    pref_room, pref_msg = get_room_from_user_preferences(device, user_id)
+    if pref_room and pref_room in possible_rooms:
+        return pref_room, pref_msg
 
     if len(present_rooms) > 1:
         room, reason = get_most_used_room_from_logs(device, present_rooms)
@@ -158,12 +230,20 @@ def infer_room(device):
         if room:
             return room, reason
 
+        latest = get_latest_log_room_for_device(device, present_rooms)
+        if latest:
+            return latest, "Selected room from latest command (user present in multiple rooms)"
+
         return None, f"User present in multiple rooms {present_rooms}. Need clarification."
 
     room, reason = get_most_used_room_from_logs(device, possible_rooms)
 
     if room:
         return room, reason
+
+    latest = get_latest_log_room_for_device(device, possible_rooms)
+    if latest:
+        return latest, "Selected room from latest matching command history"
 
     if len(possible_rooms) == 2:
         chosen = possible_rooms[0]
@@ -175,42 +255,30 @@ def infer_room(device):
     return None, f"Device '{device}' exists in multiple rooms {possible_rooms}. Need clarification."
 
 
-def mitigate_action(action):
+def mitigate_action(action, user_id=None):
     fixed = copy.deepcopy(action)
-
-    notes = []
-    raw_device = fixed.get("device")
-    if raw_device:
-        resolved = resolve_device_alias(raw_device)
-        if resolved != raw_device:
-            fixed["device"] = resolved
-            notes.append(f"Mapped device '{raw_device}' to '{resolved}'")
 
     room = fixed.get("room")
     device = fixed.get("device")
 
-    # Case 1: unknown room
-    if room in ["unknown", "", None]:
-        inferred_room, reason = infer_room(device)
+    if _room_missing_or_invalid(room):
+        inferred_room, reason = infer_room(device, user_id=user_id)
 
         if inferred_room:
             fixed["room"] = inferred_room
-            if notes:
-                return fixed, "; ".join(notes + [reason])
             return fixed, reason
 
-        if notes:
-            return fixed, "; ".join(notes + [reason])
         return fixed, reason
 
-    # Case 2: LLM used sensor as device, e.g. temperature as device
     related_device, reason = get_device_from_sensor(fixed)
 
     if related_device:
         fixed["device"] = related_device
         return fixed, reason
 
-    # Case 3: device exists, but in another room
+    room = fixed.get("room")
+    device = fixed.get("device")
+
     if room in ROOMS:
         if device not in DEVICE_CATALOG.get(room, {}):
             possible_rooms = find_device_rooms(device)
@@ -307,7 +375,7 @@ def _sensor_catalog_bounds(sensor_name):
 
 
 def _user_soft_clamp(sensor_name, value):
-    """Apply requested soft bounds before catalog enforcement."""
+    """Apply requested soft bounds before enforcing sensor min/max from your saved data."""
     if not isinstance(value, (int, float)):
         return value, None
 
@@ -348,12 +416,12 @@ def _clamp_condition_value(sensor_name, value):
     if cat_min is not None and cat_max is not None:
         if v < cat_min:
             reasons.append(
-                f"Clamped {sensor_name} value {value} to catalog minimum {cat_min}"
+                f"Clamped {sensor_name} value {value} to allowed minimum {cat_min}"
             )
             v = cat_min
         elif v > cat_max:
             reasons.append(
-                f"Clamped {sensor_name} value {value} to catalog maximum {cat_max}"
+                f"Clamped {sensor_name} value {value} to allowed maximum {cat_max}"
             )
             v = cat_max
 
@@ -500,9 +568,12 @@ def save_mitigation_log(original_rule, fixed_rule, status, reason):
         ])
 
 
-def mitigate_rule(rule):
+def mitigate_rule(rule, user_id=None):
     original_rule = copy.deepcopy(rule)
     current_rule = copy.deepcopy(rule)
+    flat_actions = normalize_rule_actions_list(current_rule.get("actions"))
+    if flat_actions:
+        current_rule["actions"] = flat_actions
 
     previous_rule = None
     last_reason = ""
@@ -532,7 +603,7 @@ def mitigate_rule(rule):
         changed = False
 
         for i, action in enumerate(current_rule.get("actions", [])):
-            fixed_action, reason = mitigate_action(action)
+            fixed_action, reason = mitigate_action(action, user_id=user_id)
 
             if fixed_action != action:
                 current_rule["actions"][i] = fixed_action

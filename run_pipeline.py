@@ -39,7 +39,7 @@ def run_pipeline(user_id, command):
         print(message)
 
         print("\nTrying mitigation...")
-        fixed_rule, status = mitigate_rule(rule)
+        fixed_rule, status = mitigate_rule(rule, user_id=user_id)
 
         if status == "mitigated_successfully":
             print("\nMitigation successful.")

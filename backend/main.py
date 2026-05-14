@@ -284,33 +284,57 @@ def _command_log_rows_normalized() -> list[dict[str, str]]:
     return out
 
 
+def _fmt_rule_val(v: Any) -> str:
+    if v is None or v == "":
+        return "—"
+    return str(v)
+
+
 def _diff_rule_timeline(
     before: dict[str, Any], after: dict[str, Any]
 ) -> list[str]:
     steps: list[str] = []
     ba = before.get("actions") or []
     aa = after.get("actions") or []
-    if len(ba) == len(aa):
-        for i, (b, a) in enumerate(zip(ba, aa)):
-            br, bd = b.get("room"), b.get("device")
-            ar, ad = a.get("room"), a.get("device")
-            if br in ("unknown", "", None) and ar not in ("unknown", "", None):
-                steps.append(f"Room inferred as {ar}")
-            if bd != ad and bd and ad:
-                steps.append(f"Device corrected: {bd} → {ad}")
-            if br != ar and br not in ("unknown", "", None) and ar:
-                steps.append(f"Room adjusted: {br} → {ar}")
-    cond_b = json.dumps(before.get("conditions") or [])
-    cond_a = json.dumps(after.get("conditions") or [])
+    if len(ba) != len(aa):
+        steps.append(
+            f"Action list length changed ({len(ba)} → {len(aa)}) after mitigation"
+        )
+    n = min(len(ba), len(aa))
+    for i in range(n):
+        b, a = ba[i], aa[i]
+        br, bd = b.get("room"), b.get("device")
+        ar, ad = a.get("room"), a.get("device")
+        label = str((ad or bd) or "device")
+
+        if br in ("unknown", "", None) and ar not in ("unknown", "", None):
+            steps.append(f"Room for '{label}' inferred as {ar}")
+        elif (
+            br not in ("unknown", "", None)
+            and ar not in ("unknown", "", None)
+            and br != ar
+        ):
+            steps.append(f"Room for '{label}' adjusted: {br} → {ar}")
+
+        if bd != ad and bd and ad:
+            steps.append(f"Device corrected: {bd} → {ad}")
+
+        b_act, a_act = b.get("action"), a.get("action")
+        if b_act and a_act and b_act != a_act:
+            steps.append(f"Action for '{label}': {b_act} → {a_act}")
+
+        bv, av = b.get("value"), a.get("value")
+        if bv != av and (bv not in ("", None) or av not in ("", None)):
+            steps.append(
+                f"Value for '{label}': {_fmt_rule_val(bv)} → {_fmt_rule_val(av)}"
+            )
+
+    cond_b = json.dumps(before.get("conditions") or [], sort_keys=True)
+    cond_a = json.dumps(after.get("conditions") or [], sort_keys=True)
     if cond_b != cond_a and (before.get("conditions") or after.get("conditions")):
-        steps.append("Condition normalized")
-    if any("clamp" in s.lower() for s in steps):
-        pass
-    else:
-        vb = json.dumps(before.get("conditions") or [])
-        va = json.dumps(after.get("conditions") or [])
-        if vb != va and ("50" in va or "50" in vb):
-            steps.append("Sensor bounds / values adjusted")
+        steps.append(
+            "Conditions updated (structure, location, operators, or value bounds)"
+        )
     return steps
 
 
@@ -326,10 +350,23 @@ def _build_run_timeline(
     if not first_valid and hallucination_message:
         steps.append(f"Hallucination detected: {hallucination_message}")
     if mitigation_status == "mitigated_successfully":
-        steps.extend(_diff_rule_timeline(generated_rule, final_rule))
-        if not any("inferred" in s.lower() or "room" in s.lower() for s in steps):
+        diff_steps = _diff_rule_timeline(generated_rule, final_rule)
+        steps.extend(diff_steps)
+        if not diff_steps and json.dumps(generated_rule) != json.dumps(final_rule):
+            steps.append("Rule updated (see generated vs final rule JSON)")
+        elif diff_steps and not any(
+            "inferred" in s.lower()
+            or "room" in s.lower()
+            or "device corrected" in s.lower()
+            or "action for" in s.lower()
+            or "value for" in s.lower()
+            or "condition" in s.lower()
+            or "sensor values" in s.lower()
+            or "action list length" in s.lower()
+            for s in diff_steps
+        ):
             if json.dumps(generated_rule) != json.dumps(final_rule):
-                steps.insert(0, "Mitigation steps applied")
+                steps.insert(0, "Automatic fixes applied")
     if mitigation_status == "mitigation_failed":
         steps.append("Mitigation could not fully repair the rule")
     if final_status == "executed":
@@ -465,7 +502,7 @@ def run_command(body: RunCommandBody) -> dict[str, Any]:
         _apply_rule_to_state(DEVICE_STATE, final_rule, ROOM_DEVICE_CATALOG)
         return base
 
-    fixed_rule, mit_status = mitigate_rule(generated_rule)
+    fixed_rule, mit_status = mitigate_rule(generated_rule, user_id=uid)
     base["mitigation_status"] = mit_status
     second_valid, msg2 = check_hallucination(fixed_rule)
     if not second_valid:
